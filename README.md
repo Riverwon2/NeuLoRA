@@ -1,4 +1,4 @@
-# NeuLoRA
+# NeuLoRA - The Thinking tutor that conntects to your neuron
 
 LangGraph 기반 개선 RAG 튜터 시스템입니다. PDF 문서 검색, 관련성 평가, 필요 시 웹 검색을 거쳐 답변을 생성합니다.
 
