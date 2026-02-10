@@ -1,15 +1,15 @@
 langchain-core
 langchain-community
-langchain-openai
 langchain-text-splitters
 langchain
 langchain-classic
-langchain-teddynote
 langchain-huggingface
 faiss-cpu
+chromadb
 pdfplumber
 python-dotenv
 pypdf
 sentence_transformers
 langgraph
 ipywidgets
+tavily-python
