@@ -155,7 +155,7 @@ def _init_chat_model():
     llm = HuggingFaceEndpoint(
         repo_id=ROUTER_MODEL,
         task="text-generation",
-        temperature=0.0,
+        temperature=0.7,
         max_new_tokens=512,
     )
     _chat_hf = ChatHuggingFace(llm=llm)
@@ -273,7 +273,7 @@ def _looks_ambiguous(q: str) -> bool:
     if not q:
         return False
     ambiguous = [
-        "그거", "그것", "이거", "저거", "그때", "저번", "아까",
+        "그거", "그것", "그게", "이게", "이거", "저거", "그때", "저번", "아까",
         "그 내용", "그 이야기", "기억나", "기억해", "다시", "이어",
         "더 자세히", "뭐였지",
     ]
