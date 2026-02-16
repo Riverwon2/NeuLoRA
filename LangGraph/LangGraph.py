@@ -183,7 +183,7 @@ def _init_rag_chain(
     global _retriever, _chain, _answer_model_used
     _log("🚀 ChromaDB 기반 RAG 체인 생성 시작...")
     _answer_model_used = _answer_model_name()
-    _log(f"🤖 답변 체인 모델 확정: {_answer_model_used}")
+    _log(f"🤖 답변 체인 모델 : {_answer_model_used}")
     rag = ChromaRetrievalChain(
         persist_directory=persist_directory,
         collection_name=collection_name,
