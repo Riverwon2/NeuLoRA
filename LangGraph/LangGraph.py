@@ -35,6 +35,7 @@ import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import TypedDict, Annotated, List, Dict, Any
+from concurrent.futures import ThreadPoolExecutor
 
 # 이 파일은 <project_root>/LangGraph/ 에 위치.
 # rag 패키지를 import 하려면 프로젝트 루트가 sys.path 에 있어야 한다.
@@ -135,6 +136,7 @@ _embeddings = None  # 임베딩 모델 인스턴스
 _app = None  # 컴파일된 LangGraph 앱
 _initialized = False  # 초기화 완료 플래그
 _answer_model_used: str | None = None  # 실제 체인 생성에 사용된 답변 모델명
+_bg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bg-db")
 
 # ============================================================
 # 8. 초기화 함수
@@ -552,7 +554,7 @@ def web_search(state: GraphState) -> GraphState:
         parts.append(f"{content}\n출처: {url}")
     formatted = "\n\n---\n\n".join(parts)
 
-    # ChromaDB 에도 저장
+    # ChromaDB 에도 저장 (비동기 — 노드 반환을 블로킹하지 않음)
     if formatted.strip():
         doc = Document(
             page_content=formatted,
@@ -561,15 +563,19 @@ def web_search(state: GraphState) -> GraphState:
                 "origin": "tavily_merged",
             },
         )
-        try:
-            _raw_ingest_docs(
-                documents=[doc],
-                persist_directory=PERSIST_DIR,
-                collection_name=COLLECTION_MAIN,
-            )
-            _log("✅ 웹 검색 결과 ChromaDB 저장 완료")
-        except Exception as e:
-            _log(f"⚠️ 웹 검색 결과 저장 실패: {e}")
+
+        def _bg_save_web():
+            try:
+                _raw_ingest_docs(
+                    documents=[doc],
+                    persist_directory=PERSIST_DIR,
+                    collection_name=COLLECTION_MAIN,
+                )
+                _log("✅ 웹 검색 결과 ChromaDB 저장 완료 (bg)")
+            except Exception as e:
+                _log(f"⚠️ 웹 검색 결과 저장 실패 (bg): {e}")
+
+        _bg_executor.submit(_bg_save_web)
 
     return GraphState(context=formatted)
 
@@ -634,25 +640,27 @@ def save_memory(state: GraphState) -> GraphState:
         },
     )
 
-    try:
-        _raw_ingest_docs(
-            documents=[raw_doc],
-            persist_directory=PERSIST_DIR,
-            collection_name=COLLECTION_CHAT_RAW,
-            chunk_size=1200,
-            chunk_overlap=120,
-        )
-        _raw_ingest_docs(
-            documents=[summary_doc],
-            persist_directory=PERSIST_DIR,
-            collection_name=COLLECTION_CHAT_SUMMARY,
-            chunk_size=400,
-            chunk_overlap=40,
-        )
-        _log("✅ save_memory 완료 (raw + summary 저장)")
-    except Exception as e:
-        _log(f"⚠️ save_memory 저장 실패: {e}")
+    def _bg_save_memory():
+        try:
+            _raw_ingest_docs(
+                documents=[raw_doc],
+                persist_directory=PERSIST_DIR,
+                collection_name=COLLECTION_CHAT_RAW,
+                chunk_size=1200,
+                chunk_overlap=120,
+            )
+            _raw_ingest_docs(
+                documents=[summary_doc],
+                persist_directory=PERSIST_DIR,
+                collection_name=COLLECTION_CHAT_SUMMARY,
+                chunk_size=400,
+                chunk_overlap=40,
+            )
+            _log("✅ save_memory 완료 (raw + summary 저장) (bg)")
+        except Exception as e:
+            _log(f"⚠️ save_memory 저장 실패 (bg): {e}")
 
+    _bg_executor.submit(_bg_save_memory)
     return {}
 
 
