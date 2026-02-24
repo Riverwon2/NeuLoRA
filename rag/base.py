@@ -16,7 +16,19 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ⚠️ 적재(ingest)와 검색(retrieve) 시 반드시 동일한 모델을 사용해야 합니다!
 EMBEDDING_MODEL = "BAAI/bge-m3"  # 임베딩 모델명
 EMBEDDING_DEVICE = "auto"                         # "cpu" / "cuda" / "auto"
-ANSWER_MODEL = "Qwen/Qwen2.5-14B-Instruct"
+ANSWER_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+
+
+def _resolve_embedding_device():
+    """PyTorch/SentenceTransformer는 'auto'를 받지 않으므로, 'auto'일 때 cuda/cpu로 변환."""
+    dev = EMBEDDING_DEVICE.strip().lower()
+    if dev == "auto":
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    return dev if dev in ("cpu", "cuda") else "cpu"
 
 
 def create_embedding_vessel():
@@ -26,9 +38,10 @@ def create_embedding_vessel():
     - 이후 캐시에서 로드 (오프라인 가능)
     - GPU 활용 가능 → 빠른 임베딩
     """
+    device = _resolve_embedding_device()
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": EMBEDDING_DEVICE},
+        model_kwargs={"device": device},
         encode_kwargs={"normalize_embeddings": True},
     )
 
@@ -114,12 +127,22 @@ class RetrievalChain(ABC):
         mode = os.getenv("LLM_MODE", "").lower()
         if mode == "vessel":
 
-            from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-            from langchain_community.llms import HuggingFacePipeline
+            from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndBytesConfig
+            from langchain_huggingface import HuggingFacePipeline
 
-            model_kwargs = {"device_map": "auto", "torch_dtype": "auto"}
-            if os.getenv("LLM_8BIT", "").lower() in ("1", "true", "yes"):
-                model_kwargs["load_in_8bit"] = True  # 3090 24GB 등에서 VRAM 절약
+            model_kwargs = {"device_map": "auto", "dtype": "auto"}
+            q4 = os.getenv("LLM_4BIT", "").lower() in ("1", "true", "yes")
+            q8 = os.getenv("LLM_8BIT", "").lower() in ("1", "true", "yes")
+            if q4:
+                print("⚖️  4bit 양자화 사용")
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype="float16",
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                )
+            elif q8:
+                model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True) # 3090 24GB 등에서 VRAM 절약
             model = AutoModelForCausalLM.from_pretrained(ANSWER_MODEL, **model_kwargs)
             tokenizer = AutoTokenizer.from_pretrained(ANSWER_MODEL)
 

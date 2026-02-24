@@ -83,8 +83,8 @@ COLLECTION_CHAT_SUMMARY = "chat_history_summarized"  # 대화 요약 저장
 # ROUTER_MODEL = "meta-llama/Llama-3.1-8B-Instruct"  # 라우팅·판단·요약용
 # CHAIN_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"  # 답변 생성용 (rag.base)
 
-ROUTER_MODEL = "Qwen/Qwen2.5-14B-Instruct"  # 라우팅·판단·요약용
-CHAIN_MODEL = "Qwen/Qwen2.5-14B-Instruct"  # 답변 생성용 (rag.base)
+ROUTER_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # 라우팅·판단·요약용
+CHAIN_MODEL = "Qwen/Qwen2.5-7B-Instruct"  # 답변 생성용 (rag.base)
 EMBEDDING_MODEL = "BAAI/bge-m3"  # 임베딩 모델
 
 MAX_CHARS_PER_DOC = 1500  # 웹 검색 결과 요약 임계치 (≈1000 토큰)
@@ -162,12 +162,23 @@ def _make_vessel_chat_model():
     vessel(로컬 GPU)용 LLM 생성.
     transformers 파이프라인 → LangChain 호환 래퍼(.invoke() 반환값에 .content 있음).
     """
-    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
-    from langchain_community.llms import HuggingFacePipeline
+    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline, BitsAndBytesConfig
+    from langchain_huggingface import HuggingFacePipeline
 
-    model_kwargs = {"device_map": "auto", "torch_dtype": "auto"}
-    if os.getenv("LLM_8BIT", "").lower() in ("1", "true", "yes"):
-        model_kwargs["load_in_8bit"] = True  # 3090 24GB 등에서 VRAM 절약
+    model_kwargs = {"device_map": "auto", "dtype": "auto"}
+    q4 = os.getenv("LLM_4BIT", "").lower() in ("1", "true", "yes")
+    q8 = os.getenv("LLM_8BIT", "").lower() in ("1", "true", "yes")
+    if q4:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype="float16",
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        _log("⚖️ 답변 LLM 4bit 양자화 사용")
+    elif q8:
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        _log("⚖️ 답변 LLM 8bit 양자화 사용")
 
     model = AutoModelForCausalLM.from_pretrained(ROUTER_MODEL, **model_kwargs)
     tokenizer = AutoTokenizer.from_pretrained(ROUTER_MODEL)

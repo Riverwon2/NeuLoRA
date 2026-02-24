@@ -46,6 +46,7 @@ YAI-NLP/
 │  ├─ utils.py                     # 문서 포맷팅 유틸
 │  └─ graph_utils.py               # 그래프 실행/세션 도우미
 ├─ requirements.txt
+├─ setup.sh
 └─ README.md
 ```
 
@@ -56,7 +57,8 @@ YAI-NLP/
 - **Backend**: FastAPI, LangGraph, LangChain
 - **Frontend**: React, Vite
 - **Vector DB**: ChromaDB
-- **LLM/Embedding**: Hugging Face Endpoint + `Qwen/Qwen2.5-14B-Instruct`, `BAAI/bge-m3`
+- **LLM/Embedding**: Hugging Face Endpoint + `Qwen/Qwen2.5-7B-Instruct`, `BAAI/bge-m3`
+- **양자화**: bitsandbytes (4bit NF4 / 8bit)
 - **Math Rendering**: KaTeX (`react-markdown` + `remark-math` + `rehype-katex`)
 
 ---
@@ -125,6 +127,50 @@ npm run dev
 cd LangGraph
 streamlit run stream.py
 ```
+
+---
+
+## 🌐 Remote(SSH) 환경에서 실행하기
+
+원격 서버에 SSH로 접속해 실행할 때도 로컬과 동일한 순서로 진행하면 됩니다.
+
+### 가상환경
+
+- **프로젝트 루트**에서 활성화합니다. `venv/bin` 디렉터리 안으로 들어갈 필요 없습니다.
+
+```bash
+cd /path/to/NeuLoRA
+source venv/bin/activate
+```
+
+- 터미널을 열 때마다(또는 SSH 접속 시) 위 명령을 한 번 실행하면 해당 세션에서 가상환경이 적용됩니다.
+
+### .env 파일
+
+- `.env`는 Git에 포함되지 않으므로, **원격 서버에서 프로젝트를 새로 클론한 경우** 해당 서버 루트에 `.env`를 직접 만들고 `HF_API_KEY` 등 필요한 변수를 넣어야 합니다.
+- 이미 해당 서버에 `.env`가 있다면 SSH 접속 여부와 관계없이 그대로 사용하면 됩니다.
+
+### 원격에서 브라우저로 접속할 때
+
+- 서버가 아닌 **내 PC 브라우저**로 접속하려면, 서버가 모든 인터페이스에서 listen 하도록 실행합니다.
+
+**백엔드:**
+
+```bash
+cd LangGraph
+uvicorn api:app --reload --host 0.0.0.0 --port 8800
+```
+
+**프론트엔드 (Vite):**  
+`LangGraph/frontend`에서 `npm run dev` 시 `--host`를 주면 외부 접속이 가능합니다.
+
+```bash
+cd LangGraph/frontend
+npm run dev -- --host
+```
+
+- 접속 주소: `http://<서버IP>:5173` (프론트), `http://<서버IP>:8800` (API)
+- 방화벽에서 5173, 8800 포트가 열려 있어야 합니다. (예: `sudo ufw allow 5173,8800`)
 
 ---
 
