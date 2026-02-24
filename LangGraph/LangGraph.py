@@ -600,9 +600,12 @@ def web_search(state: GraphState) -> GraphState:
     # 결과 포맷팅 (긴 본문은 요약)
     parts = []
     for r in results:
-        url = r.get("url", "")
-        content = _summarize_if_long(r.get("content", ""))
-        parts.append(f"{content}\n출처: {url}")
+        if isinstance(r, dict):
+            url = r.get("url", "")
+            content = _summarize_if_long(r.get("content", ""))
+            parts.append(f"{content}\n출처: {url}")
+        else:
+            parts.append(_summarize_if_long(str(r)))
     formatted = "\n\n---\n\n".join(parts)
 
     # ChromaDB 에도 저장 (비동기 — 노드 반환을 블로킹하지 않음)

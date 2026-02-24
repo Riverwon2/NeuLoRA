@@ -74,6 +74,7 @@ YAI-NLP/
 | `EMBEDDING_MODE` | 선택 | `local`(기본) / `api` |
 | `LLM_MODE` | 선택 | `api`(기본) / `vessel`(로컬 GPU, 3090 등) |
 | `LLM_8BIT` | 선택 | vessel 시 `1` 또는 `true` 이면 8bit 양자화 (24GB VRAM 권장) |
+| `LLM_4BIT` | 선택 | vessel 시 `1` 또는 `true` 이면 4bit 양자화 (16GB VRAM 권장) |
 
 예시:
 
@@ -188,9 +189,25 @@ npm run dev -- --host
 
 ## 🤖 Current model setting
 
-- **라우팅/판단/요약**: `Qwen/Qwen2.5-14B-Instruct`
-- **답변 생성(RAG)**: `Qwen/Qwen2.5-14B-Instruct`
+- **라우팅/판단/요약**: `Qwen/Qwen2.5-7B-Instruct` (임시 — GPU 메모리 부족으로 14B → 7B 다운그레이드)
+- **답변 생성(RAG)**: `Qwen/Qwen2.5-7B-Instruct` (임시 — 동일 사유)
 - **임베딩**: `BAAI/bge-m3`
+
+> **참고**: VRAM 48GB 이상 환경이 확보되면 `Qwen/Qwen2.5-14B-Instruct` 로 복원 예정입니다.
+> 모델 변경은 `LangGraph/LangGraph.py`의 `ROUTER_MODEL`·`CHAIN_MODEL` 과 `rag/base.py`의 `ANSWER_MODEL` 을 수정하면 됩니다.
+
+### 양자화 옵션
+
+로컬 GPU(`LLM_MODE=vessel`) 실행 시 `.env` 에서 양자화 수준을 선택할 수 있습니다.
+
+| 환경변수 | 양자화 | VRAM 사용량 (7B 기준) | 비고 |
+|---|---|---|---|
+| `LLM_4BIT=1` | 4bit NF4 + double quant | ~5–6 GB | **권장** (현재 기본 설정) |
+| `LLM_8BIT=1` | 8bit (bitsandbytes) | ~8–10 GB | 품질 약간 높음 |
+| 둘 다 미설정 | fp16/bf16 | ~14–16 GB | 양자화 없음 |
+
+> `LLM_4BIT` 와 `LLM_8BIT` 가 동시에 설정된 경우 4bit 가 우선 적용됩니다.
+
 
 ---
 
