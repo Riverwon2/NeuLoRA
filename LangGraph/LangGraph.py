@@ -96,7 +96,7 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableConfig
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 from langchain_chroma import Chroma
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_tavily import TavilySearch
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.memory import MemorySaver
@@ -302,15 +302,13 @@ def ingest_uploaded_file(
 def _to_text(msg) -> str:
     """
     다양한 메시지 타입을 'role: content' 문자열로 변환.
-    - LangChain BaseMessage (type, content 속성)
-    - (role, content) 튜플/리스트
-    - 기타 → str()
+    특수 토큰이 섞여있으면 제거하여 순수 대화 내용만 남긴다.
     """
     if hasattr(msg, "type") and hasattr(msg, "content"):
-        return f"{msg.type}: {msg.content}"
+        return f"{msg.type}: {_strip_chat_tokens(str(msg.content))}"
     if isinstance(msg, (tuple, list)) and len(msg) >= 2:
-        return f"{msg[0]}: {msg[1]}"
-    return str(msg)
+        return f"{msg[0]}: {_strip_chat_tokens(str(msg[1]))}"
+    return _strip_chat_tokens(str(msg))
 
 
 def _extract_question(raw) -> str:
@@ -356,6 +354,24 @@ def _conversation_only(messages) -> list:
             conv.append((role, content))
     return conv
 
+def _strip_chat_tokens(text: str) -> str:
+    """ChatHuggingFace 로컬 모델이 출력에 포함시키는 특수 토큰·시스템 프롬프트를 제거"""
+    import re as _re
+    last_assistant = text.rfind("<|im_start|>assistant")
+    if last_assistant != -1:
+        text = text[last_assistant + len("<|im_start|>assistant"):]
+    text = _re.sub(r"<\|im_start\|>\s*(system|user|assistant)", "", text)
+    text = text.replace("<|im_end|>", "").replace("<|im_start|>", "")
+    text = text.replace("<|endoftext|>", "")
+    return text.strip()
+
+
+def _invoke_clean(prompt) -> str:
+    """_chat_hf.invoke() 호출 후 특수 토큰/시스템 프롬프트를 제거한 순수 텍스트 반환"""
+    resp = _chat_hf.invoke(prompt)
+    raw = resp.content if hasattr(resp, "content") else str(resp)
+    return _strip_chat_tokens(raw)
+
 def _summarize_if_long(content: str, max_chars: int = MAX_CHARS_PER_DOC) -> str:
     """텍스트가 max_chars 를 초과하면 _chat_hf 로 요약"""
     if len(content) <= max_chars:
@@ -366,8 +382,7 @@ def _summarize_if_long(content: str, max_chars: int = MAX_CHARS_PER_DOC) -> str:
         f"---\n{content[:8000]}\n---"
     )
     try:
-        resp = _chat_hf.invoke(prompt)
-        text = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+        text = _invoke_clean(prompt)
         return text[:max_chars]
     except Exception:
         return content[:max_chars] + "..."
@@ -440,8 +455,7 @@ YES
 NO""".strip()
 
     try:
-        resp = _chat_hf.invoke(judge_prompt)
-        text = (resp.content if hasattr(resp, "content") else str(resp)).strip().upper()
+        text = _invoke_clean(judge_prompt).upper()
         llm_recall = "YES" in text
     except Exception:
         pass
@@ -474,14 +488,14 @@ NO""".strip()
 
         retrieval_query = question
         try:
-            rq = _chat_hf.invoke(rq_prompt)
-            cand = (rq.content if hasattr(rq, "content") else str(rq)).strip()
+            cand = _invoke_clean(rq_prompt)
             if cand:
                 retrieval_query = cand
         except Exception:
             pass
 
         docs = summary_store.similarity_search(retrieval_query, k=3)
+        _log(f"retrieval_query: {retrieval_query}")
         if docs:
             long_term_context = "\n".join(d.page_content for d in docs)
 
@@ -501,12 +515,13 @@ Do not answer. Return only one rewritten question in Korean.
 {question}""".strip()
 
         try:
-            resp = _chat_hf.invoke(rewrite_prompt)
-            cand = (resp.content if hasattr(resp, "content") else str(resp)).strip()
+            cand = _invoke_clean(rewrite_prompt)
             if cand:
                 rewrite_question = cand
         except Exception:
             rewrite_question = question
+
+        _log(f"재작성된 쿼리: {rewrite_question}")
 
     return GraphState(question=rewrite_question)
 
@@ -543,6 +558,7 @@ def llm_answer(state: GraphState) -> GraphState:
     except Exception as e:
         _log(f"❌ LLM 답변 생성 실패: {type(e).__name__}: {e}")
         raise
+    response = _strip_chat_tokens(response)
 
     return GraphState(
         answer=response,
@@ -565,8 +581,7 @@ Question:
 Retrieved document:
 {state["context"]}""".strip()
 
-    resp = _chat_hf.invoke(prompt)
-    text = resp.content.strip()
+    text = _invoke_clean(prompt)
 
     # JSON 부분만 추출 (모델이 앞뒤에 텍스트를 섞는 경우 대비)
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -593,17 +608,29 @@ def web_search(state: GraphState) -> GraphState:
     검색 결과는 ChromaDB(my_collection)에도 적재하여 재활용.
     """
     _log("🌐 웹 검색 시작...")
-    tavily = TavilySearchResults(max_results=5, search_depth="basic")
+    tavily = TavilySearch(max_results=5, search_depth="basic")
     query_text = state["question"]
-    results = tavily.invoke(query_text)
+    try:
+        results = tavily.invoke(query_text)
+    except Exception as e:
+        _log(f"⚠️ 웹 검색 실패: {e}")
+        return GraphState(context="웹 검색 결과를 가져오지 못했습니다.")
 
-    # 결과 포맷팅 (긴 본문은 요약)
+    # TavilySearch는 버전에 따라 list / dict / str 을 반환할 수 있음
+    if isinstance(results, dict):
+        results = results.get("results", [results])
+    if isinstance(results, str):
+        results = [{"content": results}]
+    if not isinstance(results, list):
+        _log(f"⚠️ 웹 검색 결과 파싱 불가: {type(results)}")
+        return GraphState(context="웹 검색 결과를 가져오지 못했습니다.")
+
     parts = []
     for r in results:
         if isinstance(r, dict):
             url = r.get("url", "")
             content = _summarize_if_long(r.get("content", ""))
-            parts.append(f"{content}\n출처: {url}")
+            parts.append(f"{content}\n출처: {url}" if url else content)
         else:
             parts.append(_summarize_if_long(str(r)))
     formatted = "\n\n---\n\n".join(parts)
@@ -708,10 +735,7 @@ def save_memory(state: GraphState) -> GraphState:
 방향성만 출력하세요. 다른 설명은 불필요합니다.""".strip()
 
     try:
-        resp = _chat_hf.invoke(policy_prompt)
-        policy_text = (
-            resp.content if hasattr(resp, "content") else str(resp)
-        ).strip()
+        policy_text = _invoke_clean(policy_prompt)
     except Exception as e:
         _log(f"⚠️ policy 생성 실패: {e}")
         policy_text = state.get("policy", "")
@@ -748,8 +772,7 @@ def retrieve_or_not(state: GraphState) -> str:
 {{"need_retrieve": "yes"}} 또는 {{"need_retrieve": "no"}}""".strip()
 
     try:
-        resp = _chat_hf.invoke(prompt)
-        text = (resp.content or "").strip()
+        text = _invoke_clean(prompt)
         match = re.search(r'\{[^{}]*"need_retrieve"[^{}]*\}', text)
         if match:
             data = json.loads(match.group(0))

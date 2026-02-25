@@ -5,6 +5,7 @@ langchain-text-splitters
 langchain
 langchain-classic
 langchain-huggingface
+langchain-tavily
 faiss-cpu
 chromadb
 pdfplumber
