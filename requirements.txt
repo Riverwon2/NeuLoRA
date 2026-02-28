@@ -16,3 +16,8 @@ ipywidgets
 tavily-python
 streamlit
 transformers
+torch
+numpy
+peft
+bitsandbytes
+accelerate
