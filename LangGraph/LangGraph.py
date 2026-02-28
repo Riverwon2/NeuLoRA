@@ -32,6 +32,7 @@ import time
 import json
 import re
 import uuid
+import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import TypedDict, Annotated, List, Dict, Any
@@ -87,6 +88,15 @@ ROUTER_MODEL = "Qwen/Qwen2.5-14B-Instruct"  # 라우팅·판단·요약용
 CHAIN_MODEL = "Qwen/Qwen2.5-14B-Instruct"  # 답변 생성용 (rag.base)
 EMBEDDING_MODEL = "BAAI/bge-m3"  # 임베딩 모델
 
+LORA_ROUTER_PATH = Path(__file__).parent / "router_model.json"
+
+STYLE_MODELS = {
+    "direct": "RiverWon/NeuLoRA-direct",
+    "socratic": "RiverWon/NeuLoRA-socratic",
+    "scaffolding": "RiverWon/NeuLoRA-scaffolding",
+    "feedback": "RiverWon/NeuLoRA-feedback",
+}
+
 MAX_CHARS_PER_DOC = 1500  # 웹 검색 결과 요약 임계치 (≈1000 토큰)
 
 # ============================================================
@@ -125,13 +135,15 @@ class GraphState(TypedDict):
     messages: Annotated[list, add_messages]  # 대화 이력 (누적)
     relevance: Annotated[str, "검색 문서 관련성 yes/no"]
     policy: Annotated[str, "학생에 대한 답안 방향성"]
+    style: Annotated[str, "라우팅된 LoRA 스타일(direct/socratic/scaffolding/feedback)"]
 
 
 # ============================================================
 # 7. 모듈 레벨 변수 — initialize() 에서 설정됨
 # ============================================================
 _retriever = None  # ChromaDB 기반 retriever
-_chain = None  # RAG 답변 체인
+_chains : Dict[str, Any] = {}  # {"direct": chain, "socratic": chain, "scaffolding": chain, "feedback": chain}
+_centroids : Dict[str, list] = {}  # 라우터 centroid 벡터
 _chat_hf = None  # 라우팅·판단·요약용 LLM
 _embeddings = None  # 임베딩 모델 인스턴스
 _app = None  # 컴파일된 LangGraph 앱
@@ -214,22 +226,63 @@ def _init_embeddings():
     _log(f"✅ 임베딩 모델 로드 완료: {EMBEDDING_MODEL}")
 
 
+def _init_lora_router():
+    """router_model.json에서 centroid 벡터를 로드"""
+    global _centroids
+    if not LORA_ROUTER_PATH.exists():
+        _log(f"⚠️ router_model.json 파일이 없습니다: {LORA_ROUTER_PATH}")
+        return
+    with open(LORA_ROUTER_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    _centroids = {
+        style: np.array(vec, dtype=np.float32)
+        for style, vec in data["centroids"].items()
+    }
+    _log(f"✅ LoRA 라우터 초기화 완료: {list(_centroids.keys())}")
+
+def route_style(question: str) -> str:
+    """쿼리를 임베딩하고 가장 가까운 스타일 centroid를 선택"""
+    if not _centroids:
+        return "direct"
+    query_emb = np.array(_embeddings.embed_query(question), dtype=np.float32)
+    
+    best_style, best_sim = "direct", -1.0
+    for style, centroid in _centroids.items():
+        sim = np.dot(query_emb, centroid) / (
+            np.linalg.norm(query_emb) * np.linalg.norm(centroid) + 1e-9
+        )
+        if sim > best_sim:
+            best_sim = sim
+            best_style = style
+
+    return best_style
+
 def _init_rag_chain(
     persist_directory: str = PERSIST_DIR,
     collection_name: str = COLLECTION_MAIN,
     k: int = 10,
 ):
-    """ChromaDB 기반 RAG 체인 (retriever + chain) 초기화"""
-    global _retriever, _chain, _answer_model_used
-    _log("🚀 ChromaDB 기반 RAG 체인 생성 시작...")
-    rag = ChromaRetrievalChain(
-        persist_directory=persist_directory,
-        collection_name=collection_name,
-        k=k,
-    ).create_chain()
-    _retriever = rag.retriever
-    _chain = rag.chain
-    _log("✅ RAG 체인 생성 완료")
+    """ChromaDB 기반 스타일별 RAG 체인 (retriever + chain) 초기화"""
+    global _retriever, _chains, _answer_model_used
+    _log("🚀 스타일별 RAG 체인 생성 시작...")
+
+
+    for style, model_name in STYLE_MODELS.items():
+        _log(f"  ⏳ {style} 체인 생성 중... ({model_name})")
+        rag = ChromaRetrievalChain(
+            persist_directory=persist_directory,
+            collection_name=collection_name,
+            k=k,
+            model_name = model_name,
+        ).create_chain()
+    
+        if _retriever is None:
+            _retriever = rag.retriever
+
+        _chains[style] = rag.chain
+        _log(f"✅ {style} RAG 체인 생성 완료")
+
+    _log(f"✅ 전체 RAG 체인 생성 완료: {list(_chains.keys())}")
 
 
 def initialize(
@@ -248,6 +301,7 @@ def initialize(
     _init_hf_login()
     _init_chat_model()
     _init_embeddings()
+    _init_lora_router()
     _init_rag_chain(persist_directory, collection_name, k)
     _initialized = True
     _log("✅ 파이프라인 초기화 완료")
@@ -518,10 +572,18 @@ def llm_answer(state: GraphState) -> GraphState:
     question = state["question"]
     context = state.get("context", "")
     chat_history = state.get("messages", [])
-    #policy를 어디서 가져올 진 아직 미정
     policy = state.get("policy", "")
+
+    style = route_style(question)
+    _log(f"🎯 LoRA 스타일 선택: {style}")
+
+    chain = _chains.get(style) or _chains.get("direct")
+    if chain is None:
+        _log("❌ 사용할 RAG 체인을 찾지 못했습니다. initialize()가 호출되었는지 확인하세요.")
+        raise RuntimeError("No RAG chain available. Did you call initialize()?.")
+
     try:
-        response = _chain.invoke(
+        response = chain.invoke(
             {
                 "question": question,
                 "context": context,
@@ -535,6 +597,7 @@ def llm_answer(state: GraphState) -> GraphState:
 
     return GraphState(
         answer=response,
+        style=style,
         messages=[("user", question), ("assistant", response)],
     )
 

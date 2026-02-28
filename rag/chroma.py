@@ -6,7 +6,7 @@ ChromaDB 기반 RAG 체인
 
 from operator import itemgetter
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 
 from rag.base import RetrievalChain
 
@@ -33,11 +33,15 @@ class ChromaRetrievalChain(RetrievalChain):
         persist_directory: str = "./chroma_db",
         collection_name: str = "default",
         k: int = 10,
+        model_name: str | None = None,
+        external_model=None,
     ):
         super().__init__()
         self.persist_directory = persist_directory
         self.collection_name = collection_name
         self.k = k
+        self.model_name = model_name
+        self.external_model = external_model
 
     # ── 추상 메서드 구현 (ChromaDB에서는 사용하지 않음) ──────────────
     def load_documents(self, source_uris):
@@ -79,7 +83,10 @@ class ChromaRetrievalChain(RetrievalChain):
         self.retriever = self.create_retriever(self.vectorstore)
 
         # 4. LLM 모델 및 프롬프트 (base.py 메서드 재사용)
-        model = self.create_model()
+        model = self.create_model(
+            model_name=self.model_name,
+            external_model=self.external_model,
+        )
         prompt = self.create_prompt_new()
 
         # 5. 체인 연결
@@ -89,6 +96,7 @@ class ChromaRetrievalChain(RetrievalChain):
                 "context": itemgetter("context"),
                 "chat_history": itemgetter("chat_history"),
                 "policy": itemgetter("policy"),
+                "style_instruction": itemgetter("style_instruction"),
             }
             | prompt
             | model
